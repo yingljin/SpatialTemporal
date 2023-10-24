@@ -1,0 +1,296 @@
+---
+title: "Simulating spatial-temporal data"
+author: "`r Sys.Date()`"
+output: 
+  html_document:
+    self_contained: yes
+    number_sections: true
+    code_folding: show
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    font: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+set.seed(1019)
+
+library(mgcv)
+library(nlme)
+library(tidyverse)
+library(plotly)
+library(mvtnorm)
+library(ggpubr)
+```
+
+# Potential simulation scheme
+
+The simulation, technically, would be established on a continuous space-time domain, even though the final "observations" would be a discrete realization.
+
+Take a Gaussian process for example:
+
+1. The observation is composed of a true latent process and an error process.
+
+\[\begin{aligned}Y_i(\mathbf{s}, t) &= \eta_i(\mathbf{s}, t) +\epsilon_i(\mathbf{s}, t) \\
+\epsilon_i(\mathbf{s}, t) & \sim GP(0, \Gamma_{\epsilon})\end{aligned}\]
+
+- $\Gamma_{\epsilon}$ constant across all observations 
+- Usually, realization of $\Gamma_{\epsilon}$ on any discrete grid would be $\sigma_{\epsilon}^2\mathbf{I}$. But I guess correlation of the error can be introduced by altering its structure? This is probably not what we are considering so far. 
+
+2. The true latent process is composed of a fixed process and a random (subject-specific) process. 
+
+\[\begin{aligned}
+\eta_i(\mathbf{s}, t) &= \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t) \\
+b_i(\mathbf{s}, t) & \sim GP(0, \Gamma_{b})
+\end{aligned}\]
+
+- $\mu(\mathbf{s}, t)$ is the population mean, constant across subjects
+- $b_i(\mathbf{s}, t)$ is the individual-level random effect
+- We can introduce correlation between space/time by altering the structure of $\Gamma_{b}$
+
+3. The fixed process can be a linear combination of covariates/basis functions
+
+$$\mu(\mathbf{s}, t) = \sum_{p=1}^PX_p(\mathbf{s}, t)\beta_p$$
+
+- $X(\mathbf{s}, t)$ can be either covariates or basis functions
+
+4. The random process, $b_i(\mathbf{s}, t)$, can also be decomposed into the linear combination of basis functions, just like what we did in the fGFPCA project
+
+\[\begin{aligned}b_i(\mathbf{s}, t) &= \sum_{k=1}^K\phi_k(\mathbf{s}, t)\xi_{ik} \\
+\mathbf{\xi}_i& \sim N(0, \Gamma_{\xi})
+\end{aligned}\]
+
+This is a good way to incorporate complicated spatial-temporal correlation. We may be able to incorporate spatial-specific or temporal specific correlation by factorizing $\phi(s, t)$ in to $\phi(s)$ and $\phi(t)$ and manipulating the structure of $\Gamma_{\xi}$. 
+
+Another way I can think of it is directly generating $b_i$ directly from a correlation matrix (e.g. AR1). But it seems to be it would be difficult to control on each domain. Also, the space-time domain is probably greater than 2D, on which a correlation matrix would be hard to envision. 
+
+
+# A toy exmaple
+
+Built up from last time, I would like to generate a dataset as follows:
+
+- Sample size N = 100
+- Temporal grid T = 10
+- Spatial grid: two dimensional $\mathbf{s} = (s_1, s_2)$, where $s1, s2 \in [1, 2, ..., 10]$. I will hereafter denote the collection of all $\mathbf{s}$ as $S$, and the number of spatial grid points as $S_n$. 
+- Assume for now data is collected on a regular grid
+
+
+```{r}
+# Sample size
+N <- 100
+
+# generate space grid
+nS <- 100
+s1 <- 1:10
+s2 <- 1:10
+
+# generate time grid
+nT <- 10
+t <- seq(0, 1, length.out = nT) 
+
+# put in a long-format dataframe
+df <- expand.grid(id = 1:N,
+                  s1 = s1, s2= s2, 
+                  t=t)
+df <- df %>% arrange(id)
+```
+
+
+- Assume the fixed process is constant zero
+
+```{r}
+# Fix effect
+mu_func <- function(s1, s2, t){0}
+df <- df %>% mutate(mu = mu_func(s1, s2, t))
+```
+
+
+## Generate random process
+
+I am starting with a very simple, factorized random effect: 
+
+\[\begin{aligned}
+b_i(\mathbf{s}, t) &= \xi_{i1}\phi_1(\mathbf{s})+\xi_{i2}\phi_2(t)\\
+\mathbf{\xi}_i & \sim N(0, \Gamma_{\xi}),\ 
+\Gamma_{xi}  = \begin{bmatrix} 5 & 0 \\ 0 & 5 \end{bmatrix}
+\end{aligned}\]
+
+I would like to set up the spatial distribution such that it has a peak with the highest value, and the value decrease as it gets further from the center. In other words, the value of $\phi_1(\mathbf{s})$ decrease as the distance to $(5, 5)$ increases. 
+
+On top of that, we also wish $\phi_1(\mathbf{s})$ to be bounded, and relatively smooth. 
+
+The following function satisfies the conditions: 
+
+$$\phi_1(\mathbf{s}) = \frac{1}{exp[\frac{(s1-5)^2+(s2-5)^2}{10}]}$$
+
+```{r}
+df <- df %>%
+  mutate(phi1 = 1/exp(((s1-5)^2+(s2-5)^2)/10))
+# range(df$phi1)
+plot_ly(data.frame(df, s1=s1, s2=s2), x=~s1, y=~s2, z=~phi1) %>% add_markers(size = 5)
+```
+
+For temporal correlation, I will use a square root function:
+
+$$\phi_2(t) = \sqrt{t}$$
+
+```{r}
+df <- df %>% 
+  mutate(phi2 = sqrt(t))
+# range(df$phi2)
+```
+
+Now we can generate scores and calculate the random effect. 
+
+```{r}
+xi <- matrix(rnorm(N*2, mean = 0, sd=5),
+             nrow = N, ncol = 2)
+
+# random process
+df$bi <- NA
+for(i in 1:N){
+  df$bi[df$id==i] <- as.matrix(df[df$id==1, c("phi1", "phi2")]) %*% xi[i, ]
+}
+```
+
+For simplicity, we for now do not consider random error $\epsilon$. 
+
+```{r}
+df <- df %>%
+  mutate(Y = mu+bi)
+
+# Visualize one subject
+df %>% 
+  filter(id == 50) %>%
+  ggplot()+
+  geom_tile(aes(x=s1, y=s2, fill=Y))+
+  facet_wrap(~t)+
+  labs(title="Time-startified plot for one subject (id=50)")
+```
+
+
+# Empirical mean
+
+$$\bar{Y}(s_1, s_2, t) = \frac{1}{N} Y_i(s_1, s_2, t)$$
+
+```{r}
+emp_mean <- df %>% group_by(s1, s2, t) %>%
+  summarise_at("Y", mean)
+
+# figures
+ggplot(emp_mean)+
+  geom_tile(aes(x=s1, y=s2, fill=Y))+
+  facet_wrap(~t)+labs(title = "Spatial distribution of empirical mean at given times")
+
+emp_mean %>% 
+  mutate(s = paste(s1, s2, sep=",")) %>% 
+  ggplot()+
+    geom_line(aes(x=t, y=Y, group = s))+labs(title = "Temporal trend of empirical mean at given locations")
+  
+```
+
+# Empirical covariance
+
+$$Cov(Y(s_1, s_2, t), Y(s_1', s_2', t')) = \frac{1}{N} \sum_{i=1}^N [Y_i(s_1, s_2, t)-\bar{Y}(s_1, s_2, t)] [Y_i(s_1', s_2', t')-\bar{Y}(s_1', s_2', t')]$$
+
+The full covariance matrix is large and over three dimensions, leading to $(S_n*T) \times (S_n*T) = 1e6$ covariance values. It would be difficult to display or interpret. 
+
+## Marginal correlation
+
+First, I'll start with covariate between time points marginal over location: 
+
+$$Cov(Y(t), Y(t')) = \frac{1}{N}\frac{1}{S_n} \sum_{i=1}^N \sum_{\mathbf{s}=1}^S [Y_i(\mathbf{s}, t)-\bar{Y}(., t)] [Y_i(\mathbf{s}, t')-\bar{Y}(., t')]$$
+
+```{r}
+emp_mean <- rename(emp_mean, "emp_mean" = "Y")
+
+marg_t_cov <- expand.grid(t1 = t, t2 = t)
+marg_t_cov$cor <- NA
+
+for(t1 in 1:nT){
+  y1 <- df$Y[df$t==t[t1]]
+  
+  for(t2 in 1:nT){
+    y2 <- df$Y[df$t==t[t2]]
+    marg_t_cov[marg_t_cov$t1==t[t1]&marg_t_cov$t2==t[t2], "cor"] <- cor(y1, y2, method = "pearson")
+    
+  }
+}
+
+marg_t_cov %>%
+  ggplot()+
+  geom_tile(aes(x=t1, y=t2, fill=cor))+
+  labs(title="Temporal correlation matrix marginal over location")
+
+```
+
+Use the same logic, we can calculate marginal correlation matrix over s1 and s2
+
+
+```{r}
+marg_s1_cov <- expand.grid(grid1=s1, grid2=s1)
+marg_s1_cov$cor <- NA
+
+for(sid1 in seq_along(s1)){
+  y1 <- df$Y[df$s1==s1[sid1]]
+  
+  for(sid2 in seq_along(s1)){
+    y2 <- df$Y[df$s1==s1[sid2]]
+    marg_s1_cov[marg_s1_cov$grid1==s1[sid1]&marg_s1_cov$grid2==s1[sid2], "cor"] <- cor(y1, y2, method = "pearson")
+    
+  }
+}
+
+marg_s1_cov %>%
+  ggplot()+
+  geom_tile(aes(x=grid1, y=grid2, fill=cor))+
+  labs(title = "Marginal correlation matrix along s1")
+```
+
+```{r}
+marg_s2_cov <- expand.grid(grid1=s2, grid2=s2)
+marg_s2_cov$cor <- NA
+
+for(sid1 in seq_along(s2)){
+  y1 <- df$Y[df$s2==s2[sid1]]
+  
+  for(sid2 in seq_along(s2)){
+    y2 <- df$Y[df$s2==s2[sid2]]
+    marg_s2_cov[marg_s2_cov$grid1==s2[sid1]&marg_s2_cov$grid2==s2[sid2], "cor"] <- cor(y1, y2, method = "pearson")
+    
+  }
+}
+
+marg_s2_cov %>%
+  ggplot()+
+  geom_tile(aes(x=grid1, y=grid2, fill=cor))+
+  labs(title = "Marginal correlation matrix along s2")
+```
+
+
+```{r, eval=FALSE}
+# some visualization
+loc <- paste(rep(c(1, 5, 10), 3), rep(c(1, 5, 10), each=3), sep = ",")
+
+
+temp_cov %>%
+  filter(sind %in% loc) %>% 
+  mutate(sind = factor(sind, levels = c("1,10","5,10","10,10", "1,5","5,5","10,5", "1,1","5,1","10,1"))) %>%
+  ggplot()+
+  geom_tile(aes(x=t1, y=t2, fill = cov))+
+  facet_wrap(~sind)
+```
+
+
+- Empirical temporal covariance
+
+```{r, eval=FALSE}
+temp_cov %>%
+  mutate(s1 = rep(s1, each = length(s2)*nT*nT))
+```
+
+# Some questions
+
+1. Is it necessary to make the basis functions orthogonal/orthonormal? It doesn't seem to make sense considering time and space are such different measure. What does "time" and "space" being orthogonal mean? 
