@@ -5,7 +5,7 @@ output:
   html_document:
     self_contained: yes
     number_sections: true
-    code_folding: show
+    code_folding: hide
     toc: true
     toc_depth: 3
     toc_float: true
@@ -97,6 +97,8 @@ df <- expand.grid(id = 1:N,
 df <- df %>% arrange(id)
 ```
 
+This means for each subject, there are 1000 measurements. 
+
 
 - Assume the fixed process is constant zero
 
@@ -155,57 +157,92 @@ for(i in 1:N){
 }
 ```
 
-For simplicity, we for now do not consider random error $\epsilon$. 
-
 ```{r}
 df <- df %>%
   mutate(Y = mu+bi)
 
+df$tid <- factor(df$t, levels = t, labels = 1:nT)
+```
+
+For simplicity, we for now do not consider random error $\epsilon$. 
+
+```{r, eval=FALSE}
 # Visualize one subject
 df %>% 
   filter(id == 50) %>%
   ggplot()+
   geom_tile(aes(x=s1, y=s2, fill=Y))+
-  facet_wrap(~t)+
+  facet_wrap(~tid)+
   labs(title="Time-startified plot for one subject (id=50)")
+
+plot_ly(df %>% filter(id == 50), 
+        x = ~s1, y = ~s2, z = ~ Y, color = ~tid) %>% add_markers(size = 5)
+
+# xi[50, ]
 ```
 
+# Empirial estimators
 
-# Empirical mean
+Here the data is three dimensional ($s_1, s_2, t$). It would be difficult to visualize, especially covariance matrix, since it is pariwise between every pairs of combination. In the textbook I was reading, mean and covariance at one dimention are calculated averaging over other dimensions. Details as below
 
-$$\bar{Y}(s_1, s_2, t) = \frac{1}{N} Y_i(s_1, s_2, t)$$
+## Empirical mean
 
-```{r}
-emp_mean <- df %>% group_by(s1, s2, t) %>%
-  summarise_at("Y", mean)
+Let's start with marginal mean. For example, empitical spatial mean is averaged over time
 
-# figures
-ggplot(emp_mean)+
-  geom_tile(aes(x=s1, y=s2, fill=Y))+
-  facet_wrap(~t)+labs(title = "Spatial distribution of empirical mean at given times")
+$$\bar{Y}(\mathbf{s}) = \frac{1}{NT}\sum_{i=1}^N \sum_{t=1}^T Y_i(\mathbf{s}, t)$$
 
-emp_mean %>% 
-  mutate(s = paste(s1, s2, sep=",")) %>% 
+```{r, warning=FALSE, message=FALSE}
+df %>% 
+  group_by(s1, s2) %>%
+  summarize(emp_sp_mean = mean(Y)) %>%
   ggplot()+
-    geom_line(aes(x=t, y=Y, group = s))+labs(title = "Temporal trend of empirical mean at given locations")
+  geom_tile(aes(x=s1, y=s2, fill=emp_sp_mean))+
+  labs(title = "Empirical spatial mean")
+```
+Likewise, empirical temporal mean would marginalize over space:
+
+$$\bar{Y}(t) = \frac{1}{NS_n}\sum_{i=1}^N \sum_{\mathbf{s} \in S} Y_i(\mathbf{s}, t)$$
+
+
+```{r, warning=FALSE, message=FALSE}
+df %>% 
+  group_by(t) %>%
+  summarize(emp_t_mean = mean(Y)) %>%
+  ggplot()+
+  geom_line(aes(x=t, y=emp_t_mean))+
+  labs(title = "Empirical temporal mean")
+```
+
+I guess in the mean case, I can barely visualize the 3D funciton: 
+
+
+$$\bar{Y}(s_1, s_2, t) = \frac{1}{N} \sum_{i=1}^N Y_i(s_1, s_2, t)$$
+
+```{r, warning=FALSE, message=FALSE}
+df %>% group_by(s1, s2, t) %>%
+  summarise(emp_mean = mean(Y)) %>% 
+  mutate(t=as.factor(round(t, 2))) %>%
+  plot_ly(., x=~s1, y=~s2, z=~emp_mean, color=~t) %>%
+  add_markers(size = 0.2)
   
 ```
 
-# Empirical covariance
+## Empirical covariance
+
+For this kind of spatial-temporal data, covariance/correlation matrix is a more complicated issue. Technically, it can be calculated between any pair of combination of space and time: 
 
 $$Cov(Y(s_1, s_2, t), Y(s_1', s_2', t')) = \frac{1}{N} \sum_{i=1}^N [Y_i(s_1, s_2, t)-\bar{Y}(s_1, s_2, t)] [Y_i(s_1', s_2', t')-\bar{Y}(s_1', s_2', t')]$$
 
-The full covariance matrix is large and over three dimensions, leading to $(S_n*T) \times (S_n*T) = 1e6$ covariance values. It would be difficult to display or interpret. 
+This matrix is apparently very large and would be difficult to either visualize or interpret. It doesn't make sense to flatten eventhing out and force space and time index onto the same grid. Therefore, I tried to simplify it to a marginal/conditional matrix. A few ways I can think of as follows: 
 
-## Marginal correlation
+
+### Marginal correlation
 
 First, I'll start with covariate between time points marginal over location: 
 
 $$Cov(Y(t), Y(t')) = \frac{1}{N}\frac{1}{S_n} \sum_{i=1}^N \sum_{\mathbf{s}=1}^S [Y_i(\mathbf{s}, t)-\bar{Y}(., t)] [Y_i(\mathbf{s}, t')-\bar{Y}(., t')]$$
 
 ```{r}
-emp_mean <- rename(emp_mean, "emp_mean" = "Y")
-
 marg_t_cov <- expand.grid(t1 = t, t2 = t)
 marg_t_cov$cor <- NA
 
@@ -226,10 +263,11 @@ marg_t_cov %>%
 
 ```
 
-Use the same logic, we can calculate marginal correlation matrix over s1 and s2
+
+Use the same logic, we can calculate marginal correlation matrix over space. But I am not exactly sure who to visualize this matrix, since it is over four dimensions.  
 
 
-```{r}
+```{r, eval=FALSE}
 marg_s1_cov <- expand.grid(grid1=s1, grid2=s1)
 marg_s1_cov$cor <- NA
 
@@ -249,7 +287,7 @@ marg_s1_cov %>%
   labs(title = "Marginal correlation matrix along s1")
 ```
 
-```{r}
+```{r, eval=FALSE}
 marg_s2_cov <- expand.grid(grid1=s2, grid2=s2)
 marg_s2_cov$cor <- NA
 
@@ -270,26 +308,103 @@ marg_s2_cov %>%
 ```
 
 
-```{r, eval=FALSE}
-# some visualization
-loc <- paste(rep(c(1, 5, 10), 3), rep(c(1, 5, 10), each=3), sep = ",")
+### Multilevel model
 
+Assume spatial and temporal effects can be factorized: 
 
-temp_cov %>%
-  filter(sind %in% loc) %>% 
-  mutate(sind = factor(sind, levels = c("1,10","5,10","10,10", "1,5","5,5","10,5", "1,1","5,1","10,1"))) %>%
-  ggplot()+
-  geom_tile(aes(x=t1, y=t2, fill = cov))+
-  facet_wrap(~sind)
+$$Y_i(\mathbf{s}, t) = f_0(\mathbf{s}, t)+b_i(\mathbf{s}, t)=f_0(\mathbf{s}, t)+\sum_{k=1}^K\xi_{ik}\phi_{k}(\mathbf{s})+\sum_{l=1}^L\zeta_{il}\psi_{k}(t)$$
+
+We can fit this model and visualize individual random effect over space or time. 
+
+```{r}
+# basis function for spatial random effect
+phi_mat <- smoothCon(ti(s1, s2, k=3, bs = c("cr", "cr")), data= df %>% select(s1, s2) %>% distinct(.))
+# dim(phi_mat[[1]]$X)
+phi_mat <- data.frame(df %>% select(s1, s2) %>% distinct(.), phi_mat[[1]]$X)
+colnames(phi_mat) <- c("s1", "s2", paste0("phi", 1:4))
 ```
 
 
-- Empirical temporal covariance
-
-```{r, eval=FALSE}
-temp_cov %>%
-  mutate(s1 = rep(s1, each = length(s2)*nT*nT))
+```{r}
+# basis function for temporal random effect
+psi_mat <- smoothCon(s(t, k=4, bs = "cr"), data= data.frame(t))
+# dim(psi_mat[[1]]$X)
+psi_mat <- data.frame(t=t, psi_mat[[1]]$X)
+colnames(psi_mat) <- c("t", paste0("psi", 1:4))
 ```
+
+
+```{r}
+df_fit <- df %>%
+  select(-phi1, -phi2) %>%
+  left_join(phi_mat, by = c("s1", "s2")) %>%
+  left_join(psi_mat, by = "t")
+
+fit_glmm <- bam(Y ~ ti(s1, s2, t, k=3, bs = c("cr", "cr", "cr"))+
+                     s(id, by=phi1, bs="re")+
+                     s(id, by=phi2, bs="re")+
+                     s(id, by=phi3, bs="re")+
+                     s(id, by=phi4, bs="re")+
+                     s(id, by=psi1, bs="re")+
+                     s(id, by=psi2, bs="re")+
+                     s(id, by=psi3, bs="re")+
+                     s(id, by=psi4, bs="re"), 
+                data = df_fit,
+                method = "fREML",
+                discrete = TRUE)
+
+# covariance
+# length(fit_glmm$coefficients)
+# dim(fit_glmm$Ve)
+```
+
+
+```{r}
+# See the estimated functional effect for one subject
+glmm_pred <- predict(fit_glmm, type = "terms")
+# dim(glmm_pred)
+
+pred_df <- df_fit %>% select(id, s1, s2, t) %>%
+  mutate(mu_est = glmm_pred[, 1], 
+         sp_est = apply(glmm_pred[, 2:5], 1, sum), 
+         t_est = apply(glmm_pred[, 6:9], 1, sum))
+
+rand_id <- sample(1:N, size = 4)
+
+```
+
+
+- Visualize random effect
+
+
+```{r} 
+# Spatial
+pred_df %>%
+  filter(id %in% rand_id) %>%
+  select(id, s1, s2, sp_est) %>%
+    ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill = sp_est))+
+    facet_wrap(~id)+
+  labs(title = "Individual spatial random effect")
+  
+```
+
+
+```{r}
+pred_df %>%
+  filter(id %in% rand_id) %>%
+  mutate(id = as.factor(id)) %>%
+  select(id, t, t_est) %>%
+    ggplot()+
+    geom_line(aes(x=t, y=t_est, col = id, group = id))
+  
+```
+
+- First of all, potentially, there can be a lot of basis functions for random effects
+- This is not a "correlation matrix" but a function. It is also on the individual level, not population level. 
+- Some potential ideas: semivariogram? 
+
+
 
 # Some questions
 
