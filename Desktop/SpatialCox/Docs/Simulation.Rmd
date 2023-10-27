@@ -15,7 +15,7 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-set.seed(1019)
+set.seed(1026)
 
 library(mgcv)
 library(nlme)
@@ -312,9 +312,23 @@ marg_s2_cov %>%
 
 Assume spatial and temporal effects can be factorized: 
 
-$$Y_i(\mathbf{s}, t) = f_0(\mathbf{s}, t)+b_i(\mathbf{s}, t)=f_0(\mathbf{s}, t)+\sum_{k=1}^K\xi_{ik}\phi_{k}(\mathbf{s})+\sum_{l=1}^L\zeta_{il}\psi_{k}(t)$$
+$$Y_i(\mathbf{s}, t) = f_0(\mathbf{s}, t)+b_i(\mathbf{s}, t)=f_0(\mathbf{s}, t)+\sum_{k=1}^K\xi_{ik}\phi_{k}(\mathbf{s})+\sum_{l=1}^L\zeta_{il}\psi_{l}(t)$$
 
-We can fit this model and visualize individual random effect over space or time. 
+Assum fixed effect, spatial random effect and temporal random effect are all mutually independent. Since spatial and temporal random effects are factorized, we may be able to represent their contribution to the overall covariance matrix separately: 
+
+- At given time, the collection of outcome across all space: 
+
+$$\mathbf{Y}_{it} = \{Y_i(s, t), s\in S\}$$
+
+can be written as:
+
+$$\mathbf{Y}_{it} = \mathbf{f}_0(t)+\mathbf{\Phi}\mathbf{\xi}_i+\mathbf{1}_{S_n}\mathbf{\psi}(t)\mathbf{\zeta}_i$$
+Then the variation across space: 
+
+$$Var(\mathbf{Y}_{it}) = \mathbf{\Phi}\Gamma_{\xi}\mathbf{\Phi}^T+\mathbf{1}_{S_n}\mathbf{\psi}(t)\Gamma_{\psi}(\mathbf{1}_{S_n}\mathbf{\psi}(t))^T$$
+- This variance matrix change across time
+
+#### Fit model and estimate functional effects
 
 ```{r}
 # basis function for spatial random effect
@@ -374,7 +388,7 @@ rand_id <- sample(1:N, size = 4)
 ```
 
 
-- Visualize random effect
+- Visualize random effect for a few subjects
 
 
 ```{r} 
@@ -399,6 +413,54 @@ pred_df %>%
     geom_line(aes(x=t, y=t_est, col = id, group = id))
   
 ```
+
+#### Covariance matrix
+
+- Take spatial as example
+
+
+```{r}
+# 10-13 phi, 14-17 psi
+cov_phi <- fit_glmm$Vc[10:13, 10:13]
+cov_psi <- fit_glmm$Vc[14:17, 14:17]
+
+
+full_cov_sp <- array(NA, dim = c(nS, nS, nT))
+
+Phi <- as.matrix(phi_mat[, 3:6])
+cov_Y1 <- Phi %*% cov_phi %*% t(Phi)
+
+for(i in seq_along(t)){
+  term2 <- kronecker(rep(1, nS), as.matrix(psi_mat[i, 2:5]))
+  cov_t <- cov_Y1 + term2 %*% cov_psi %*% t(term2)
+  
+  full_cov_sp[ , ,i] <- cov_t
+}
+
+```
+
+```{r, fig.height=4, fig.width=12}
+heatmap_lst <- list()
+tid <- c(1, 5, 10)
+
+for(i in seq_along(tid)){
+  this_heatmap <- full_cov_sp[, ,tid[i]] %>%
+    data.frame() %>%
+    mutate(spidx1 = 1:100) %>%
+    pivot_longer(1:100) %>%
+    mutate(spidx2 = rep(1:100, 100)) %>%
+    ggplot()+
+    geom_tile(aes(x=spidx1, y=spidx2, fill = value))+
+    labs(title = paste("The ", tid[i], "th obesrvation", sep = ""))
+  
+  heatmap_lst[[i]] <- this_heatmap
+}
+
+ggarrange(heatmap_lst[[1]], heatmap_lst[[2]], heatmap_lst[[3]],
+          common.legend = T, nrow = 1)
+```
+
+
 
 - First of all, potentially, there can be a lot of basis functions for random effects
 - This is not a "correlation matrix" but a function. It is also on the individual level, not population level. 

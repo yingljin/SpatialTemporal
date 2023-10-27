@@ -1,0 +1,125 @@
+---
+title: "Covariance of Sptial-temporal data"
+author: "`r Sys.Date()`"
+output: 
+  html_document:
+    self_contained: yes
+    number_sections: true
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    font: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+set.seed(1026)
+
+library(mgcv)
+library(nlme)
+library(tidyverse)
+library(plotly)
+library(mvtnorm)
+library(ggpubr)
+```
+
+# Some assumptions
+
+First, let's define the observations grid as follows: 
+
+- Sample size i = 1... N
+- Temporal grid t = 1...T
+- Spatial grid: two dimensional $\mathbf{s} = (s_1, s_2)$, where $s1, s2 \in [1, 2, ..., S]$. I will hereafter denote the collection of all spatial ind as $\mathscr{S}$.
+- Assume for now data is collected on a regular grid. For simplicity, we further set $T=S=10$, making 100 spatial coordinates and 10 temporal measurements for every subject at every spatial coordinate. 
+
+In this case, the outcome $Y_i(\mathbf{s}, t)$ is indexed by three variables: $s_1, s_2$ and t. It can be broken down in to a fixed process and a random (subject-level) process (ignoring random error process for now): 
+
+$$ Y_i(s_1, s_2, t) = f_0(s_1, s_2, t) + b_i(s_1, s_2, t)$$
+
+For simplicity, let's assume that the randon effect of space $\mathbf{s}$ and time $t$ is factorizable, but the random effect between different dimensions in space (between $s_1$ and $s_2$) are not factorizable. The random effect can then be written as:
+
+$$b_i(s_1, s_2, t) = \xi_{i1}\phi_1(s_1, s_2)+\xi_{i2}\phi_2(t)$$
+
+# Covariance matrix
+
+What we are trying to do here is calculate the covariance between $Y$ at each pairs of combination of $(s_1, s_2, t)$, as follows: 
+
+$$Cov(Y(s_1, s_2, t), Y(s_1', s_2', t')) = \frac{1}{N} \sum_{i=1}^N [Y_i(s_1, s_2, t)-\bar{Y}(s_1, s_2, t)] [Y_i(s_1', s_2', t')-\bar{Y}(s_1', s_2', t')]$$
+
+This measure would be a function of six variables: $s_1, s_2, t, s_1', s_2'$ and $t'$. a 6-dimensional function is difficult to present using traditional methods like heatmap. I am going to try to explain why it is the case below. 
+
+For simplicity, let's first assume we are conditioning on a specific time point $t^*$ and only thinking about covariance between spatial coordinates: 
+
+$$Cov(Y(s_1, s_2, t^*), Y(s_1', s_2', t^*))$$
+
+The two points can be any pair of points in the 2D surface $\mathscr{S}$ below:
+
+```{r}
+sp_grid <- expand.grid(s1=1:10, s2=1:10)
+ggplot(sp_grid, aes(x=s1, y=s2))+
+  scale_x_continuous(breaks = 1:10)+
+  scale_y_continuous(breaks = 1:10)+
+  labs(title = c("Full 2D spatial grid"))
+```
+
+And then we try to calculate covariance between measures taken at every pair of points, which are written out as below: 
+
+\begin{aligned}
+& Cov(Y(1, 1, t^*), Y(1, 1, t^*)) \\
+& Cov(Y(1, 1, t^*), Y(2, 1, t^*)) \\
+& ...\\
+& Cov(Y(1, 1, t^*), Y(10, 1, t^*)) \\
+& \\
+& Cov(Y(1, 1, t^*), Y(1, 2, t^*)) \\
+& Cov(Y(1, 1, t^*), Y(2, 2, t^*)) \\
+& ... \\
+& Cov(Y(1, 1, t^*), Y(10, 2, t^*)) \\
+
+& ... \\
+& ... \\
+
+& Cov(Y(10, 10, t^*), Y(10, 10, t^*)) \\
+\end{aligned}
+
+As you can see, both $s_1, s_2, s_1',s_2'$ varies from 1:10. Therefore, we will have $10\times10\times10\times10$ values, not the 100 points in the original space grid. 
+
+
+If we flatten the covariances on to a 2D surface by the coordinates of point 1 and point 2, both axis will be index by the full coordinate $(s_1, s_2)$, instead of the single space dimension, just like below: 
+
+(Apologize for the small font size. I really don't know how to make this prettier.)
+
+```{r}
+sp_grid <- sp_grid %>% 
+  mutate(coord = paste0("(", s1, ", ", s2, ")"))
+
+cor_grid <- expand.grid(point1 = sp_grid$coord, point2 = sp_grid$coord)
+
+cor_grid %>%
+  ggplot(aes(x=point1, y=point2))+
+  theme(axis.text.x = element_text(size = 3, angle = 90),
+        axis.text.y = element_text(size = 3),
+        plot.margin = margin(0, 5, 0, 0, "pt"))+
+  labs(title = "The grid of pairwise covariance over spatial points")
+  
+
+```
+
+This is also why we saw the little $10\times 10$ squares in the covariance heatmap in our meeting yesterday. This is because each single space dimension $s_1$ or $s_2$ alters cyclically every 10 measurements. Take point1 axis as an example: the first ten points are (1,1) to (10, 1), then the next 10 points (1,2) to (10, 2), and so on.
+
+```{r}
+end_cyc <- grep("\\(10, ", cor_grid$point1, value =T)
+end_cyc <- c("(1, 1)", end_cyc)
+
+cor_grid %>%
+  ggplot(aes(x=point1, y=point2))+
+  scale_x_discrete(breaks=end_cyc)+
+  scale_y_discrete(breaks=end_cyc)+
+  theme(axis.text.x = element_text(size = 5, angle = 90),
+        axis.text.y = element_text(size = 5),
+        plot.margin = margin(0, 5, 0, 0, "pt"))+
+  labs(title = "The grid of pairwise covariance spatial cycles")
+  
+
+```
