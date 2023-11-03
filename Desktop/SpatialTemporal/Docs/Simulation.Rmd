@@ -242,9 +242,11 @@ b_i^{Y}(\mathbf{s}, t) &= \xi_{i1}^Y\phi_1(\mathbf{s})+\xi_{i2}^Y\phi_2(t)+\xi_{
 b_i^{Z}(\mathbf{s}, t) &= \xi_{i1}^Z\phi_1(\mathbf{s})+\xi_{i2}^Z\phi_2(t)\\
 \end{aligned}\]
 
+Please note that here, to increase the change with time of correlation, I've change $\phi_2(t) = e^t$
+
 ```{r}
 df2 <- df %>% select(-Z, -Y, -starts_with("xi_"))
-df2$phi2 <- df2$phi2^6
+df2$phi2 <- exp(df2$t)
 
 # new scores
 xi_mat2 <- rmvnorm(N, mean = rep(0, 5), sigma = diag(rep(1, 5)))
@@ -304,6 +306,85 @@ df2 %>% group_by(id, t) %>%
 
 Time change is introduced but not a lot. 
 
-In fact in this set up, for a subject at a specific time point, the only random component in Y and Z is the error term. The slope of Y wrt Z would only depend on individual scores and $\phi(t)$. 
+In fact in this set up, at specific time points for as single subject, the slope of E(Y) wrt E(Z) would only depend on individual scores and $\phi(t)$ as below:
+
+\[\begin{aligned}
+E[Y_i(\mathbf{s}, t)] &= \xi_{i1}^Y\phi_1(\mathbf{s})+\xi_{i2}^Y\phi_2(t)+\xi_{i3}^Y\phi_1(\mathbf{s})\phi_2(t)\\
+E[Z_i(\mathbf{s}, t)] &= \xi_{i1}^Z\phi_1(\mathbf{s})+\xi_{i2}^Z\phi_2(t)\\
+\end{aligned}\]
+
+The slope of Y wrt Z between two locations: 
+
+\[\frac{E[Y_i(\mathbf{s}_1, t)]-E[Y_i(\mathbf{s}_2, t)]}{E[Z_i(\mathbf{s}_1, t)]-E[Z_i(\mathbf{s}_2, t)]} 
+= \frac{[\xi_{i1}^Y+\xi_{i3}^Y\phi_2(t)][\phi_1(\mathbf{s}_1)-\phi_1(\mathbf{s}_2)]}{\xi_{i1}^Z[\phi_1(\mathbf{s}_1)-\phi_1(\mathbf{s}_2)]}
+= \frac{\xi_{i1}^Y+\xi_{i3}^Y\phi_2(t)}{\xi_{i1}^Z}\]
+
+I am using the slope of expectations as a very rough proxy here of correlation because it is much, much easier to calculate in this set up. We might be able to manipulate this slope by changing the shape of $\phi_2$ and the distribution of individual scores. 
 
 
+For example, here $\phi_2(t) = e^t$ is a monotonically increasing function. So we can set $\frac{\xi_{i3}^Y}{\xi_{i1}^Z}>0$ to make the slope increease over time, and vice versa. 
+
+```{r, fig.height=12, fig.width=18}
+# increasing positive correlation over time
+inc_id <- xi_mat2 %>% filter(xi_y1*xi_z1>0 & xi_y3*xi_z1>0) %>% 
+  sample_n(4)
+
+df2 %>% filter(id %in% inc_id$id) %>%
+  ggplot()+
+  geom_point(aes(x=Z, y=Y), size = 0.2)+
+  geom_smooth(aes(x=Z, y=Y), method = "lm", formula = "y ~ x")+
+  stat_cor(aes(x=Z, y=Y))+
+  facet_grid(rows=vars(id), cols = vars(t))+
+  labs(title="Examples of increasing positive slope over time")
+```
+
+
+```{r, fig.height=12, fig.width=18}
+# decreasing negative correlation
+inc_id <- xi_mat2 %>% filter(xi_y1*xi_z1<0 & xi_y3*xi_z1<0) %>% 
+  sample_n(4)
+
+df2 %>% filter(id %in% inc_id$id) %>%
+  ggplot()+
+  geom_point(aes(x=Z, y=Y), size = 0.2)+
+  geom_smooth(aes(x=Z, y=Y), method = "lm", formula = "y~x")+
+  stat_cor(aes(x=Z, y=Y))+
+  facet_grid(rows=vars(id), cols = vars(t))+
+  labs(title="Examples of decreasing negative slope over time")
+```
+
+The correlation under both cases gets stronger over time. As for scenarios where the correlation gets weaker over time (decreasing positive/increasing negative), it is harder to set up through only scores. We may need to either change the distribution of scores or introduce time-varying individual scores to achieve that. 
+
+For example, let's say we have a subject with different variation of each scores, where the spread $\xi_{i1}^Y$ is much larger than the rest. It would lead to a decreasing positive correlation
+
+```{r}
+xi_vec <- c(5, 1, -2, 1, 1)
+names(xi_vec) <- c("xi_y1", "xi_y2", "xi_y3", "xi_z1", "xi_z2")
+```
+
+```{r, fig.height=6, fig.width=18}
+df_new <- expand_grid(t_grid, sp_grid)
+df_new <- df_new %>%
+  mutate(Y = phi1*xi_vec[1]+phi2*xi_vec[2]+phi1*phi2*xi_vec[3],
+         Z = phi1*xi_vec[4]+phi2*xi_vec[5])
+
+df_new$Y <- df_new$Y+rnorm(nrow(df_new),0, 0.5)
+df_new$Z <- df_new$Z+rnorm(nrow(df_new),0, 0.5)
+
+df_new %>% 
+  pivot_longer(6:7) %>%
+  ggplot()+
+  geom_tile(aes(x=s1, y=s2, fill=value))+
+  facet_grid(rows=vars(name), cols = vars(t))+
+  labs(title="Outcome")
+```
+
+```{r, fig.height=5, fig.width=18}
+df_new %>% 
+  ggplot()+
+  geom_point(aes(x=Z, y=Y), size = 0.2)+
+  geom_smooth(aes(x=Z, y=Y), method = "lm", formula = "y~x")+
+  stat_cor(aes(x=Z, y=Y), method = "pearson")+
+  facet_grid(cols = vars(t))+
+  labs(title="Correlation")
+```
