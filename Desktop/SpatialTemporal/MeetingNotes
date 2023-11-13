@@ -1,0 +1,5 @@
+# 23/11/13
+
+1. Generate covariates (X) and outcome (Y). X can be time/spatial varying, beta should be only time-varying
+2. Plot Y vs X stratified by time
+3. Do linear regression of Y on X and see inferential results
