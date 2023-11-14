@@ -5,7 +5,7 @@ output:
   html_document:
     self_contained: yes
     number_sections: true
-    code_folding: show
+    code_folding: hide
     toc: true
     toc_depth: 3
     toc_float: true
@@ -24,6 +24,7 @@ library(plotly)
 library(mvtnorm)
 library(ggpubr)
 library(geoR)
+library(MBESS)
 ```
 
 
@@ -80,352 +81,155 @@ The ultimated gola is to simulated a pair of correlated measure for each voxel (
 
 Since we usually have only a few scans over time for each patient, I was wondering if we could simply code $\psi(t)$ as a random intercept? Basically treating time as a categorical variable? 
 
-# Spatial effect
+# Measurement grid
 
-The first thing I have thought about was to generated from a specific distribution family. For example, spatial auto-regression, Matern, et cetera. In such cases, the covariance/correlation between two pairs of spatial points would be a function of the "distance" between the two points. 
+For now, let's assume data is collected alone a regular grid. meaning subjects are measured at the same spatial coordinates at the same time. There is no missing data. 
 
-On this point, I am struggling with the dimensionality problem of spatial index. Let's say we are working on a 2D space $(s_1, s_2)$: 
+- 21 by 21 spatial grid
+- 5 measurement time
 
 ```{r}
 # create spatial grid
+# 2D space, 21 points along each axis, 441 spatial points in total
 s1 <- s2 <- seq(-1, 1, by = 0.1)
 coords <- expand.grid(s1, s2) 
 nS <- nrow(coords)
 ```
 
 
-Even though we have only `r length(s1)` points along each axis, there would be `r nS` points, thus `r nS^2` distance measures. 
-
-
 ```{r}
-# calculate distance
-coords$pid <- 1:nS
-df_dist <- expand.grid(p1 = 1:nS, p2 = 1:nS) %>% 
-  mutate(dist=NA)
-
-for(i in 1:nrow(df_dist)){
-  coord_p1 <- coords[coords$pid==df_dist$p1[i], c("Var1", "Var2")]
-  coord_p2 <- coords[coords$pid==df_dist$p2[i], c("Var1", "Var2")]
-  df_dist$dist[i] <- sqrt(sum((coord_p1-coord_p2)^2))
-}
-```
-
-```{r}
-# Matern correlation matrix
-sp_cormat <- matern(df_dist$dist, phi = 0.25, kappa = 0.25)
-plot(df_dist$dist, sp_cormat, type = "p", main = "Matern correlation",
-     xlab = "Distance", ylab = "", pch=20, cex = 0.5)
-df_dist$cor <- sp_cormat
-```
-
-```{r}
-sp_cormat <- matrix(sp_cormat, nrow = nS, ncol = nS) # row-p1, col=p2
-heatmap(sp_cormat, Rowv=NA, Colv = NA)
-```
-
-
-
-
-# A toy exmaple under the simplist scenario
-
-## Assumptions 
-
-We set up a few more assumptions for simplity
-
-1. $\mu_{Y}(\mathbf{s}, t)=\mu_{Z}(\mathbf{s}, t) = 0$
-2. Spatial effect follows a Matern distirbution
-
-https://en.wikipedia.org/wiki/Mat%C3%A9rn_covariance_function
-3. Temporal effect is a slope
-
-```{r}
-# spatial grid and random effect
-s1 <- seq(-1, 1, by = 0.05)
-s2 <- seq(-1, 1, by = 0.05)
-sp_grid <- expand_grid(s1=s1, s2=s2)
-nS <- nrow(sp_grid)
-
-# basis function
-phi_sp_func <- function(s1, s2){
-  y <- cos(pi*(s1^2+s2^2)/2)
-  return(y)
-}
-
-sp_grid <- sp_grid %>%
-  mutate(phi1 = phi_sp_func(s1, s2))
-
-sp_grid %>% plot_ly(., x = ~s1, y=~s2, z=~phi1) %>% add_markers(size = 0.5) %>%
-  layout(title = "Spatial basis function in random effect")
-```
-
-
-```{r}
-t <- seq(0, 1, by = 0.2) 
+# create temporal grid
+# five measurement time
+t <- seq(0.2, 1, by = 0.2)
 nT <- length(t)
-
-t_grid <- data.frame(t=t, phi2=sqrt(t))
-```
-
-4. Independent scores with equal variance. We further assume scores of the same subject have the same variance: $\xi_{i1}^Y, \xi_{i2}^Y, \xi_{i1}^Z, \xi_{i2}^Z \sim N(0, \sigma_{\xi}^2)$.
-
-We also set $\sigma_{\xi}^2 = 1$.
-
-5. Random noise: $\epsilon_i^{Y}(\mathbf{s}, t), \epsilon_i^{Z}(\mathbf{s}, t) \sim GP(0, \sigma_{\epsilon}^2)$.
-
-We also set $\sigma_{\epsilon}^2=1$.
-
-To make it look like the actual data, random error is necessary. It is because $E(Y_i(\mathbf{s}, t))$ and $E(Z_i(\mathbf{s}, t))$ are perfectly linearly correlated without this error term. 
-
-6. Data collected on regular grid
-
-
-## Data generation
-
-Here we generate data for N=100. The subject ID here would correspond to "lesion_id", and $\mathbf{s}$ the "voxel coordinates". Y and Z are proxies for "QSM" and "MWF". 
-
-```{r}
-# Sample size
-N <- 100
-
-# put in a long-format dataframe
-df <- expand.grid(id = 1:N, t=t, s1 = s1, s2= s2)
-df <- df %>% arrange(id, t)
-
-# fix effect is constant zero
-# random effects
-df <- df %>% left_join(sp_grid, by = c("s1", "s2")) %>%
-  left_join(t_grid, by = "t")
 ```
 
 
+# Generate data for one subject
+
+## Fixed effect
+
+Here we try to generate the fixed component in the true latent process. For now, I'd like to set up a simple structure with three covariates (P = 3): 1) spatial-varying, 2) temporal varying, 3) fixed. No interaction term is included. The coefficients are time-varying but spatial-fixed.
+
+$$\mu(\mathbf{s}, t) = X_1(\mathbf{s})\beta_1(t)+t\beta_2(t)+X_3\beta_3(t)$$
+
+### Spatial-varing covariate
+
+For the spatial-varying covariate $X_1(\mathbf{s})$, let's first try Gaussian process with Matern correlation. Also, since we set the standard deviation at each spatial point as one, the correlation and covariance matrix would have identical values. 
+
 ```{r}
-# generate scores
-xi_mat <- rmvnorm(N, mean = rep(0, 4), 
-                  sigma = diag(rep(1, 4)))
-xi_mat <- data.frame(id=1:N, xi_mat)
-colnames(xi_mat) <- c("id", "xi_y1", "xi_y2", "xi_z1", "xi_z2")
+# assign an index for each spatial point
+coords$pid <- 1:nS
+colnames(coords) <- c("s1", "s2", "pid")
+
+# calculate pairwise spatial Euclidiean distance matrix
+df_dist <- dist(coords %>% select(s1, s2), diag = T)
+df_dist <- as.matrix(df_dist)
+
+# calculate Matern correlation matrix
+sp_cormat <- matern(df_dist, phi = 0.25, kappa = 0.25)
+
+# visualize correlation
+plot(as.vector(df_dist), as.vector(sp_cormat), 
+     type = "p", main = "Matern correlation",
+     xlab = "Distance", ylab = "", pch=20, cex = 0.5)
 ```
 
 ```{r}
-# final outcome
-df <- df %>% left_join(xi_mat, by = "id")
-df <- df %>% 
-  mutate(Y = xi_y1*phi1+xi_y2*phi2,
-         Z = xi_z1*phi1+xi_z2*phi2)
-# add noise
-df$Y <- df$Y+rnorm(nrow(df))
-df$Z <- df$Z+rnorm(nrow(df))
+# Convert correlation matrix to covariance
+# in fact, because here I set standard deviation at each location as 1
+# the correlation and covariance matrix are identical
+sp_covmat <- cor2cov(sp_cormat, sd = rep(1, nS))
+# sp_covmat[331:337, 331:337]
+# sp_cormat[331:337, 331:337]
 ```
 
 
-Below are examples of a few individuals
+```{r}
+# generate spatial varying covariates from Gaussian process
+X1 <- rmvnorm(1, mean = rep(0, nS), sigma = sp_covmat)
 
-```{r, fig.height=12, fig.width=18}
-rand_id <- sample(N, size = 4)
-# Visualize one subject
-df %>% 
-  filter(id %in% rand_id) %>%
+df_sp_i <- data.frame(coords, X1=X1[1, ])
+# visualization 
+
+plot_ly(data = df_sp_i, x=~s1, y=~s2, z=~X1) %>% add_markers(size = 0.5)
+
+df_sp_i %>% ggplot()+
+  geom_tile(aes(x=s1, y=s2, fill=X1))+
+  labs(title = "Spatial-varying fixed covariate")
+```
+
+### Time-varying coefficient
+
+As we've talked about before, the coefficients $\mathbf{\beta}$ are set as time-varying but not spatial-varying.
+
+Think about a situation where effect goes away as time passes by, meaning the coefficients are decreasing wrt time.
+
+$\beta_p = \frac{\alpha}{t}$
+
+Let's assume spatial- and time-varying covariates contribute equally to the fixed process, while the fixed covariate has the weakest effect 
+
+```{r}
+alpha <- c(0.2, -0.2, 0.1)
+df_t_i <- data.frame(t=t) %>% mutate(beta1 = alpha[1]/t,
+                            beta2 = alpha[2]/t,
+                            beta3 = alpha[3]/t)
+
+```
+
+
+### Overall fixed process
+
+```{r}
+df_i <- expand.grid(s1=s1, s2=s2, t=t) %>% 
+  left_join(df_sp_i, by = c("s1", "s2")) %>%
+  left_join(df_t_i, by = "t") %>%
+  mutate(X3 = 1) %>%
+  mutate(mu = X1*beta1+t*beta2+X3*beta3)
+```
+
+
+```{r}
+df_i %>% 
+  ggplot()+
+  geom_tile(aes(x=s1, y=s2, fill=mu))+
+  facet_wrap(~t)+
+  labs(title = "Fixed process")
+```
+
+
+## Random process
+
+Now, let's generate individual-specific random process. The simplest case would be a random slope for each the spatial-varying covariate and time. Also, the scores/random coefficients do not vary with time, and are generate independently from normal distribution.
+
+$b_i(\mathbf{s}, t) =X_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0, \sigma^2_{k})$
+
+
+```{r}
+# generate random score
+xi <- rmvnorm(1, mean = rep(0, 2), sigma = diag(1, 2,2))
+df_i <- df_i %>% mutate(bi = X1*xi[1]+t*xi[2])
+
+
+# visualize
+df_i %>% 
+  ggplot()+
+  geom_tile(aes(x=s1, y=s2, fill=bi))+
+  facet_wrap(~t)+
+  labs(title = "Random process")
+```
+
+
+# Final outcome
+
+```{r}
+df_i$error <- rnorm(nrow(df_i), 1, 0.5)
+df_i <- df_i %>% mutate(Y = mu+bi+error)
+
+# visualize
+df_i %>% 
   ggplot()+
   geom_tile(aes(x=s1, y=s2, fill=Y))+
-  facet_grid(rows = vars(id), cols = vars(t))+
-  labs(title="Time-startified plot for Y")
-
-df %>% 
-  filter(id %in% rand_id) %>%
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=Z))+
-  facet_grid(rows = vars(id), cols = vars(t))+
-  labs(title="Time-startified plot for Y")
-```
-
-## Time-stratified correlation estimates
-
-Note that we are conditional on subject i, the scores $\xi$ are not random anymore. Also, $\phi_2(t)$ is fixed because we are conditioning on t. Since the random error is also uncorrelated, Y and Z would be correlated only through $\phi_1(\mathbf{s})$. 
-
-Thus, the correlation also shouldn't change over time. 
-
-Below we show the stratified individual correlation marginal over space. 
-
-```{r, fig.height=12, fig.width=18}
-df %>% filter(id %in% rand_id) %>%
-  ggplot()+
-  geom_point(aes(x=Z, y=Y), size = 0.2)+
-  stat_cor(aes(x=Z, y=Y))+
-  facet_grid(rows=vars(id), cols = vars(t))+
-  labs(title="Time-stratified individual correlation for four subjects")
-```
-
-
-The figure below reveals that correlation varies across subject quite a bit but not over time. This is consistent with my expectation. 
-
-```{r, message=FALSE}
-df %>% group_by(id, t) %>%
-  summarise(corYZ = cor(Y,Z)) %>%
-  ggplot()+
-  geom_tile(aes(x=t, y=id, fill=corYZ))+
-  scale_x_continuous(breaks = t)+
-  labs(title = "Time-stratified correlation for all subjects")
-
-```
-
-# A toy example with time-varing correlation
-
-
-In fact, if the spatial and temporal random effects are separable, the correlation won't change over time. To make the correlation between Y and Z change with time, I'd like to first try to add a simple interaction term between spatial and temporal effect: 
-
-\[\begin{aligned}
-b_i^{Y}(\mathbf{s}, t) &= \xi_{i1}^Y\phi_1(\mathbf{s})+\xi_{i2}^Y\phi_2(t)+\xi_{i3}^Y\phi_1(\mathbf{s})\phi_2(t)\\
-b_i^{Z}(\mathbf{s}, t) &= \xi_{i1}^Z\phi_1(\mathbf{s})+\xi_{i2}^Z\phi_2(t)\\
-\end{aligned}\]
-
-Please note that here, to increase the change with time of correlation, I've change $\phi_2(t) = e^t$
-
-```{r}
-df2 <- df %>% select(-Z, -Y, -starts_with("xi_"))
-df2$phi2 <- exp(df2$t)
-
-# new scores
-xi_mat2 <- rmvnorm(N, mean = rep(0, 5), sigma = diag(rep(1, 5)))
-colnames(xi_mat2) <- c("xi_y1", "xi_y2", "xi_y3", "xi_z1", "xi_z2")
-xi_mat2 <- data.frame(id = 1:N, xi_mat2)
-
-df2 <- df2 %>% left_join(xi_mat2, by = "id")
-
-df2 <- df2 %>%
-  mutate(Y = xi_y1*phi1+xi_y2*phi2+xi_y3*phi1*phi2,
-         Z = xi_z1*phi1+xi_z1*phi2)
-
-df2$Y <- df2$Y+rnorm(nrow(df2), sd = 0.5)
-df2$Z <- df2$Z+rnorm(nrow(df2), sd = 0.5)
-```
-
-
-
-```{r, fig.height=12, fig.width=18}
-# Visualize one subject
-df2 %>% 
-  filter(id %in% rand_id) %>%
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=Y))+
-  facet_grid(rows = vars(id), cols = vars(t))+
-  labs(title="Time-startified plot for Y")
-
-df2 %>% 
-  filter(id %in% rand_id) %>%
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=Z))+
-  facet_grid(rows = vars(id), cols = vars(t))+
-  labs(title="Time-startified plot for Y")
-```
-
-```{r, fig.height=12, fig.width=18}
-df2 %>% filter(id %in% rand_id) %>%
-  ggplot()+
-  geom_point(aes(x=Z, y=Y), size = 0.2)+
-  stat_cor(aes(x=Z, y=Y))+
-  facet_grid(rows=vars(id), cols = vars(t))+
-  labs(title="Time-stratified individual correlation for four subjects")
-```
-
-
-The figure below reveals that correlation varies across subject quite a bit but not over time. This is consistent with my expectation. 
-
-```{r, message=FALSE}
-df2 %>% group_by(id, t) %>%
-  summarise(corYZ = cor(Y,Z)) %>%
-  ggplot()+
-  geom_tile(aes(x=t, y=id, fill=corYZ))+
-  scale_x_continuous(breaks = t)+
-  labs(title = "Time-stratified correlation for all subjects")
-
-```
-
-Time change is introduced but not a lot. 
-
-In fact in this set up, at specific time points for as single subject, the slope of E(Y) wrt E(Z) would only depend on individual scores and $\phi(t)$ as below:
-
-\[\begin{aligned}
-E[Y_i(\mathbf{s}, t)] &= \xi_{i1}^Y\phi_1(\mathbf{s})+\xi_{i2}^Y\phi_2(t)+\xi_{i3}^Y\phi_1(\mathbf{s})\phi_2(t)\\
-E[Z_i(\mathbf{s}, t)] &= \xi_{i1}^Z\phi_1(\mathbf{s})+\xi_{i2}^Z\phi_2(t)\\
-\end{aligned}\]
-
-The slope of Y wrt Z between two locations: 
-
-\[\frac{E[Y_i(\mathbf{s}_1, t)]-E[Y_i(\mathbf{s}_2, t)]}{E[Z_i(\mathbf{s}_1, t)]-E[Z_i(\mathbf{s}_2, t)]} 
-= \frac{[\xi_{i1}^Y+\xi_{i3}^Y\phi_2(t)][\phi_1(\mathbf{s}_1)-\phi_1(\mathbf{s}_2)]}{\xi_{i1}^Z[\phi_1(\mathbf{s}_1)-\phi_1(\mathbf{s}_2)]}
-= \frac{\xi_{i1}^Y+\xi_{i3}^Y\phi_2(t)}{\xi_{i1}^Z}\]
-
-But how can I calculate the correlation averaging over space given time and subject? That is, the correlation betwee $Y_i(.,t)$ and $Z_i(., t)$? 
-
-I am using the slope of expectations as a very rough proxy here of correlation because it is much, much easier to calculate in this set up. We might be able to manipulate this slope by changing the shape of $\phi_2$ and the distribution of individual scores. 
-
-
-For example, here $\phi_2(t) = e^t$ is a monotonically increasing function. So we can set $\frac{\xi_{i3}^Y}{\xi_{i1}^Z}>0$ to make the slope increease over time, and vice versa. 
-
-```{r, fig.height=12, fig.width=18}
-# increasing positive correlation over time
-inc_id <- xi_mat2 %>% filter(xi_y1*xi_z1>0 & xi_y3*xi_z1>0) %>% 
-  sample_n(4)
-
-df2 %>% filter(id %in% inc_id$id) %>%
-  ggplot()+
-  geom_point(aes(x=Z, y=Y), size = 0.2)+
-  geom_smooth(aes(x=Z, y=Y), method = "lm", formula = "y ~ x")+
-  stat_cor(aes(x=Z, y=Y))+
-  facet_grid(rows=vars(id), cols = vars(t))+
-  labs(title="Examples of increasing positive slope over time")
-```
-
-
-```{r, fig.height=12, fig.width=18}
-# decreasing negative correlation
-inc_id <- xi_mat2 %>% filter(xi_y1*xi_z1<0 & xi_y3*xi_z1<0) %>% 
-  sample_n(4)
-
-df2 %>% filter(id %in% inc_id$id) %>%
-  ggplot()+
-  geom_point(aes(x=Z, y=Y), size = 0.2)+
-  geom_smooth(aes(x=Z, y=Y), method = "lm", formula = "y~x")+
-  stat_cor(aes(x=Z, y=Y))+
-  facet_grid(rows=vars(id), cols = vars(t))+
-  labs(title="Examples of decreasing negative slope over time")
-```
-
-
-The correlation under both cases gets stronger over time. As for scenarios where the correlation gets weaker over time (decreasing positive/increasing negative), it is harder to set up through only scores. We may need to either change the distribution of scores or introduce time-varying individual scores to achieve that. 
-
-
-
-For example, let's say we have a subject with different variation of each scores, where the spread $\xi_{i1}^Y$ is much larger than the rest. It would lead to a decreasing positive correlation
-
-```{r}
-xi_vec <- c(5, 1, -2, 1, 1)
-names(xi_vec) <- c("xi_y1", "xi_y2", "xi_y3", "xi_z1", "xi_z2")
-```
-
-```{r, fig.height=6, fig.width=18}
-df_new <- expand_grid(t_grid, sp_grid)
-df_new <- df_new %>%
-  mutate(Y = phi1*xi_vec[1]+phi2*xi_vec[2]+phi1*phi2*xi_vec[3],
-         Z = phi1*xi_vec[4]+phi2*xi_vec[5])
-
-df_new$Y <- df_new$Y+rnorm(nrow(df_new),0, 0.5)
-df_new$Z <- df_new$Z+rnorm(nrow(df_new),0, 0.5)
-
-df_new %>% 
-  pivot_longer(6:7) %>%
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=value))+
-  facet_grid(rows=vars(name), cols = vars(t))+
-  labs(title="Outcome")
-```
-
-```{r, fig.height=5, fig.width=18}
-df_new %>% 
-  ggplot()+
-  geom_point(aes(x=Z, y=Y), size = 0.2)+
-  geom_smooth(aes(x=Z, y=Y), method = "lm", formula = "y~x")+
-  stat_cor(aes(x=Z, y=Y), method = "pearson")+
-  facet_grid(cols = vars(t))+
-  labs(title="Correlation")
+  facet_wrap(~t)+
+  labs(title = "Outcome")
 ```
