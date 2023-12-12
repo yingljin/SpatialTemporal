@@ -28,7 +28,7 @@ library(MBESS)
 ```
 
 
-# Basic framework
+# Generate from model 
 
 The simulation, technically, would be established on a continuous space-time domain, even though the final "observations" would be a discrete realization.
 
@@ -75,161 +75,283 @@ If we again assume that random spatial and temporal effects are separable, then:
 - $\psi_l(t), l = 1...L$ are tempral basis functions
 - $\xi_{ikl}$ are individual scores
 
-Another way I can think of it is directly generating $b_i$ directly from a correlation matrix (e.g. AR1). But it seems to be it would be difficult to control on each domain. Also, the space-time domain is probably greater than 2D, on which a correlation matrix would be hard to envision. 
 
-The ultimated gola is to simulated a pair of correlated measure for each voxel (QSM and MWF), so we can calculate a "correlation" at a specific region (lesion) at a specifc time (scan). However, for now, I'll start with a single outcome. 
+Following steps above, we introduce spatial and temporal correlation only in $\mu$ and $b_i$. The errors should be iid. 
 
-Since we usually have only a few scans over time for each patient, I was wondering if we could simply code $\psi(t)$ as a random intercept? Basically treating time as a categorical variable? 
+Here we run into an important issue: for a image of 256 by 256, it seems to be too large to compute all pairwise Euclidean distances and thus get a correlation matrix. 
 
-# Measurement grid
+# Generate from random field
 
-For now, let's assume data is collected alone a regular grid. meaning subjects are measured at the same spatial coordinates at the same time. There is no missing data. 
+In this case space index $\mathbf{s}$ is treated as discrete. We denote all the measures from the same subject i as $\mathbf{Y}_i = \{Y_i(\mathbf{s}), \mathbf{s}\in S\}$ (here we flatten the multi-dimensional index vector $\mathbf{s}$). Then
 
-- 21 by 21 spatial grid
-- 5 measurement time
+$$\mathbf{Y}_i = \mathbf{\eta}_i+A\mathbf{Z}$$
+where:
 
-```{r}
-# create spatial grid
-# 2D space, 21 points along each axis, 441 spatial points in total
-s1 <- s2 <- seq(-1, 1, by = 0.1)
-coords <- expand.grid(s1, s2) 
-nS <- nrow(coords)
+- $\mathbf{\eta}_i = \{\eta_i(\mathbf{s}), \mathbf{s}\in S\}$ is the mean of subject i. 
+- $\Sigma=AA^T$ is the spatial correlation matrix 
+- $Z \sim N(\mathbf{0}, \mathbf{I})$ is random noise
+
+The simulation becomes very time-consuming for large sample size or dense spatial index. Therefore we may use a **moving average Gaussian process** to introduce spatial correlation. That is:
+
+$$Y_i(\mathbf{s}, t) = \eta_i(\mathbf{s}, t) + \frac{1}{N_r}\sum_{\mathbf{s'} \in S_r}Z(\mathbf{s'}, t)$$
+
+where:
+
+- $S_r$ is a neighborhood around $\mathbf{s}$ where the radius is r
+- $N_r$ is the number of spacial points within neighborhood $S_r$
+
+In this case, the spatial correlation is introduced into the noise process. Do we really need to further introducing spatial correlation or spatial-varying coefficient in the mean process? Could it be only tme-varying? 
+
+We could try to introduce fixed and random effects by decomposing $\eta$: 
+
+$$\eta_i(\mathbf{s}, t) = \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t)$$
+
+and the fixed and random process can incorporate time-effect, or effect of any covariates. 
+
+Here, the spatial correlation is introduced in the noise process. Perhaps we don't need to do that in $\eta$. That is, $\eta$ only needs to be time-varying? 
+
+## Example
+
+Let's start with a zero-mean process:
+
+### Spatially correlated noise
+
+```{r gen_img}
+# generate a 2D image of 256 by 256
+s1 <- s2 <- 1:256
+
+# generate white noise
+Zmat <- matrix(rnorm(length(s1)*length(s2), 0, 1), length(s1), length(s2))
 ```
 
 
-```{r}
-# create temporal grid
-# five measurement time
+```{r ma_field_func}
+# moving average through 5 by 5 filter
+# input filter size and the original 2D image
+
+MA_rand_field <- function(k, Zmat){
+  
+  s1 <- nrow(Zmat)
+  s2 <- ncol(Zmat)
+
+  
+  psize <- (k-1)/2 # padding size 
+  # add zero padding
+  pad_mat <- cbind(matrix(0, nrow = s1, ncol = psize),
+                   Zmat, 
+                   matrix(0, nrow = nrow(Zmat), ncol = psize)) # pad columns
+  pad_mat <- rbind(matrix(0, nrow = psize, ncol = ncol(pad_mat)),
+                   pad_mat, 
+                   matrix(0, nrow = psize, ncol = ncol(pad_mat)))
+  
+  # moving average
+  ma_mat <- matrix(NA, s1, s2)
+  
+  for(i in 1:s1){
+    for(j in 1:s2){ 
+    
+    ma_mat[i, j] <- mean(pad_mat[i:(i+k-1), j:(j+k-1)])
+    
+    }
+  }
+  
+  return(ma_mat)
+
+}
+
+```
+
+
+```{r ma_field}
+
+ma_k5 <- MA_rand_field(5, Zmat)
+ma_k15 <- MA_rand_field(15, Zmat)
+ma_k25 <- MA_rand_field(25, Zmat)
+
+df_ma <- expand.grid(s1=s1, s2=s2) %>%
+  mutate(original = as.vector(Zmat),
+         k5=as.vector(ma_k5),
+         k15=as.vector(ma_k15),
+         k25=as.vector(ma_k25))
+
+```
+
+
+```{r, fig.height=6, fig.width=6}
+# visualization
+ggarrange(
+  df_ma %>%
+    ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=original))+
+    labs(title = "Original white noise"),
+   
+  df_ma %>%
+    ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=k5))+
+    labs(title = "Moving average (k=5)"),
+
+  
+  df_ma %>%
+    ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=k15))+
+    labs(title = "Moving average (k=15)"),
+
+  
+  df_ma %>%
+    ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=k25))+
+    labs(title = "Moving average (k=25)"),
+  
+  nrow = 2, ncol = 2, common.legend = T
+
+)
+  
+```
+
+In this case the spatial correlation would have to do with the kernel size used to create the moving average field. It looks like the greater kernel size is, the stronger spatial correlation (with neighborhoods) would be. 
+
+Another potential issue about this generation mechanism is that the partial correaltion is not easily specified with a certain equation (like the Matern family distribution). But isn't it a limitation of all spatial generation mechanisms? 
+
+### The mean process
+
+A few things need clarification before a proper mean could be generated. For example:
+
+- Is fixed effect time-varying? space-varying? What about random effects?
+- Are coefficients time/space-varying?
+- Does correlation exists in anywhere except for noise? 
+- Do we need iid noise on top of the spatial correlated noise? 
+
+For now, perhaps I should start with the simplest structure: 
+
+
+$$Y_i(\mathbf{s}, t) = \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t) + \frac{1}{N_r}\sum_{\mathbf{s'} \in S_r}Z(\mathbf{s'}, t)$$
+
+Similar to the dynamic prediction project, I set the population mean as zero: $\mu(\mathbf{s}, t)+b_i(\mathbf{s}, t) = 0$.
+
+For random effect, I set up one random slope for (non-factorized) time, and one random slope for space. Specifically, the "spatial function" is the standardized distance away from a center $(c_1, c_2)$. Perhaps this center can also be subject-specific? But now I'm just gonna set $c_1=c_2=128.5$ for all subjects (midpoint of axis). 
+
+\[\begin{aligned}
+b_i(\mathbf{s}, t) &= \phi_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0, \sigma^2_{k}) \\
+\phi_1(\mathbf{s}) &= \sqrt{(\frac{s_1-c_1}{256})^2+(\frac{s_2-c_2}{256})^2}
+\end{aligned}\]
+
+
+
+```{r time_grid}
 t <- seq(0.2, 1, by = 0.2)
 nT <- length(t)
 ```
 
-
-# Generate data for one subject
-
-## Fixed effect
-
-Here we try to generate the fixed component in the true latent process. For now, I'd like to set up a simple structure with three covariates (P = 3): 1) spatial-varying, 2) temporal varying, 3) fixed. No interaction term is included. The coefficients are time-varying but spatial-fixed.
-
-$$\mu(\mathbf{s}, t) = X_1(\mathbf{s})\beta_1(t)+t\beta_2(t)+X_3\beta_3(t)$$
-
-### Spatial-varing covariate
-
-For the spatial-varying covariate $X_1(\mathbf{s})$, let's first try Gaussian process with Matern correlation. Also, since we set the standard deviation at each spatial point as one, the correlation and covariance matrix would have identical values. 
-
 ```{r}
-# assign an index for each spatial point
-coords$pid <- 1:nS
-colnames(coords) <- c("s1", "s2", "pid")
-
-# calculate pairwise spatial Euclidiean distance matrix
-df_dist <- dist(coords %>% select(s1, s2), diag = T)
-df_dist <- as.matrix(df_dist)
-
-# calculate Matern correlation matrix
-sp_cormat <- matern(df_dist, phi = 0.25, kappa = 0.25)
-
-# visualize correlation
-plot(as.vector(df_dist), as.vector(sp_cormat), 
-     type = "p", main = "Matern correlation",
-     xlab = "Distance", ylab = "", pch=20, cex = 0.5)
+df_ma$phi1 <- sqrt((df_ma$s1/256-mean(s1)/256)^2+(df_ma$s2/256-mean(s2)/256)^2)
+df <- expand_grid(df_ma, t=t)
 ```
 
-```{r}
-# Convert correlation matrix to covariance
-# in fact, because here I set standard deviation at each location as 1
-# the correlation and covariance matrix are identical
-sp_covmat <- cor2cov(sp_cormat, sd = rep(1, nS))
-# sp_covmat[331:337, 331:337]
-# sp_cormat[331:337, 331:337]
+
+```{r gen_score}
+K <- 2
+xi <- mvtnorm::rmvnorm(1, mean = rep(0, K), sigma = diag(rep(1, K)))
 ```
 
 
 ```{r}
-# generate spatial varying covariates from Gaussian process
-X1 <- rmvnorm(1, mean = rep(0, nS), sigma = sp_covmat)
 
-df_sp_i <- data.frame(coords, X1=X1[1, ])
-# visualization 
-
-plot_ly(data = df_sp_i, x=~s1, y=~s2, z=~X1) %>% add_markers(size = 0.5)
-
-df_sp_i %>% ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=X1))+
-  labs(title = "Spatial-varying fixed covariate")
-```
-
-### Time-varying coefficient
-
-As we've talked about before, the coefficients $\mathbf{\beta}$ are set as time-varying but not spatial-varying.
-
-Think about a situation where effect goes away as time passes by, meaning the coefficients are decreasing wrt time.
-
-$\beta_p = \frac{\alpha}{t}$
-
-Let's assume spatial- and time-varying covariates contribute equally to the fixed process, while the fixed covariate has the weakest effect 
-
-```{r}
-alpha <- c(0.2, -0.2, 0.1)
-df_t_i <- data.frame(t=t) %>% mutate(beta1 = alpha[1]/t,
-                            beta2 = alpha[2]/t,
-                            beta3 = alpha[3]/t)
+df <- df %>%
+  mutate(Y_k5 = phi1*xi[1]+t*xi[2]+k5,
+         Y_k15 = phi1*xi[1]+t*xi[2]+k15,
+         Y_k25 = phi1*xi[1]+t*xi[2]+k25)
 
 ```
 
-
-### Overall fixed process
-
-```{r}
-df_i <- expand.grid(s1=s1, s2=s2, t=t) %>% 
-  left_join(df_sp_i, by = c("s1", "s2")) %>%
-  left_join(df_t_i, by = "t") %>%
-  mutate(X3 = 1) %>%
-  mutate(mu = X1*beta1+t*beta2+X3*beta3)
+```{r, fig.height=10, fig.width=15}
+ggarrange(
+  
+  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y_k5))+
+    facet_wrap(~t, nrow = 1)+
+    labs(col = "Y", y = "K = 5", x = ""),
+  
+  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y_k15))+
+    facet_wrap(~t, nrow = 1)+
+    labs(col = "Y", y = "K = 15", x = ""),
+  
+  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y_k25))+
+    facet_wrap(~t, nrow = 1)+
+    labs(col = "Y", y = "K = 25", x = ""),
+  
+  ncol = 1, common.legend = T
+)
 ```
 
 
-```{r}
-df_i %>% 
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=mu))+
-  facet_wrap(~t)+
-  labs(title = "Fixed process")
-```
+<!-- ### Fixed effect:  -->
+
+<!-- $$\mu(\mathbf{s}, t) = X_1(\mathbf{s})\beta_1(t)+\beta_2(t)+X_3\beta_3(t)$$ -->
+
+<!-- - $X_1(\mathbf{s})$ is a Gaussian process with Matern correlation. Here we run into the first issue: for a image of 256 by 256, it seems to be too large to compute all pairwise Euclidean distances and thus get a correlation matrix.  -->
 
 
-## Random process
+<!-- ```{r, eval=FALSE} -->
+<!-- # assign an index for each spatial point -->
+<!-- df_coords$pid <- 1:nS -->
+<!-- colnames(df_coords) <- c("s1", "s2", "pid") -->
 
-Now, let's generate individual-specific random process. The simplest case would be a random slope for each the spatial-varying covariate and time. Also, the scores/random coefficients do not vary with time, and are generate independently from normal distribution.
+<!-- # calculate pairwise spatial Euclidiean distance matrix -->
+<!-- df_dist <- dist(df_coords %>% select(s1, s2), diag = T) -->
+<!-- df_dist <- as.matrix(df_dist) -->
 
-$b_i(\mathbf{s}, t) =X_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0, \sigma^2_{k})$
+<!-- # calculate Matern correlation matrix -->
+<!-- sp_cormat <- matern(df_dist, phi = 0.25, kappa = 0.25) -->
+<!-- sp_covmat <- cor2cov(sp_cormat, sd = rep(1, nS)) -->
+
+<!-- # generate spatial varying covariates from Gaussian process -->
+<!-- X1 <- rmvnorm(1, mean = rep(0, nS), sigma = sp_covmat) -->
+
+<!-- df_sp_i <- data.frame(coords, X1=X1[1, ]) -->
+<!-- # visualization  -->
+
+<!-- plot_ly(data = df_sp_i, x=~s1, y=~s2, z=~X1) %>% add_markers(size = 0.5) -->
+
+<!-- df_sp_i %>% ggplot()+ -->
+<!--   geom_tile(aes(x=s1, y=s2, fill=X1))+ -->
+<!--   labs(title = "Spatial-varying fixed covariate") -->
+<!-- ``` -->
+
+<!-- ### Random process -->
 
 
-```{r}
-# generate random score
-xi <- rmvnorm(1, mean = rep(0, 2), sigma = diag(1, 2,2))
-df_i <- df_i %>% mutate(bi = X1*xi[1]+t*xi[2])
+<!-- $b_i(\mathbf{s}, t) =X_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0, \sigma^2_{k})$ -->
 
 
-# visualize
-df_i %>% 
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=bi))+
-  facet_wrap(~t)+
-  labs(title = "Random process")
-```
+<!-- ```{r} -->
+<!-- # generate random score -->
+<!-- xi <- rmvnorm(1, mean = rep(0, 2), sigma = diag(1, 2,2)) -->
+<!-- df_i <- df_i %>% mutate(bi = X1*xi[1]+t*xi[2]) -->
 
 
-# Final outcome
+<!-- # visualize -->
+<!-- df_i %>%  -->
+<!--   ggplot()+ -->
+<!--   geom_tile(aes(x=s1, y=s2, fill=bi))+ -->
+<!--   facet_wrap(~t)+ -->
+<!--   labs(title = "Random process") -->
+<!-- ``` -->
 
-```{r}
-df_i$error <- rnorm(nrow(df_i), 1, 0.5)
-df_i <- df_i %>% mutate(Y = mu+bi+error)
 
-# visualize
-df_i %>% 
-  ggplot()+
-  geom_tile(aes(x=s1, y=s2, fill=Y))+
-  facet_wrap(~t)+
-  labs(title = "Outcome")
-```
+<!-- # Final outcome -->
+
+<!-- ```{r} -->
+<!-- df_i$error <- rnorm(nrow(df_i), 1, 0.5) -->
+<!-- df_i <- df_i %>% mutate(Y = mu+bi+error) -->
+
+<!-- # visualize -->
+<!-- df_i %>%  -->
+<!--   ggplot()+ -->
+<!--   geom_tile(aes(x=s1, y=s2, fill=Y))+ -->
+<!--   facet_wrap(~t)+ -->
+<!--   labs(title = "Outcome") -->
+<!-- ``` -->
+
+
+
+
+

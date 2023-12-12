@@ -3,3 +3,10 @@
 1. Generate covariates (X) and outcome (Y). X can be time/spatial varying, beta should be only time-varying
 2. Plot Y vs X stratified by time
 3. Do linear regression of Y on X and see inferential results
+
+
+# 23/11/20
+1. Potential unidentifiability issue: try not use the same covariates in fixed and random effects
+
+# 23/12/7
+1. Moving average simulation
