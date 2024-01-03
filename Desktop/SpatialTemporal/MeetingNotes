@@ -10,3 +10,9 @@
 
 # 23/12/7
 1. Moving average simulation
+
+# 23/12/14
+1. Add time-varying temporal effect to the mean process
+2. Generate a second outcome and calculate correlation:
+Y_i2(s,t) = 2t * Y_i1(s,t) + b_i(s,t) + error
+3. Get a 100-subject example? 

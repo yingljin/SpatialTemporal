@@ -20,11 +20,13 @@ set.seed(1026)
 library(mgcv)
 library(nlme)
 library(tidyverse)
-library(plotly)
+library(knitr)
+library(kableExtra)
 library(mvtnorm)
 library(ggpubr)
-library(geoR)
-library(MBESS)
+library(here)
+
+source(here("Code/RandomField.R"))
 ```
 
 
@@ -36,133 +38,46 @@ Take a Gaussian process for example:
 
 1. The observation is composed of a true latent process and an error process.
 
-\[\begin{aligned}Y_i(\mathbf{s}, t) &= \eta_i(\mathbf{s}, t) +\epsilon_i(\mathbf{s}, t) \\
-\epsilon_i(\mathbf{s}, t) & \sim GP(0, \Gamma_{\epsilon})\end{aligned}\]
-
-- $\Gamma_{\epsilon}$ constant across all observations 
-- Usually, realization of $\Gamma_{\epsilon}$ on any discrete grid would be $\sigma_{\epsilon}^2\mathbf{I}$. 
-
+$$Y_i(\mathbf{s}, t) = \eta_i(\mathbf{s}, t) +\epsilon_i(\mathbf{s}, t)$$
 2. The true latent process is composed of a fixed process and a random (subject-specific) process. 
 
-\[\begin{aligned}
-\eta_i(\mathbf{s}, t) &= \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t) \\
-b_i(\mathbf{s}, t) & \sim GP(0, \Gamma_{b})
-\end{aligned}\]
+$$\eta_i(\mathbf{s}, t) = \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t)$$
 
 - $\mu(\mathbf{s}, t)$ is the population mean function, shared across subjects
 - $b_i(\mathbf{s}, t)$ is the individual-level random effect
-- We can introduce correlation between space/time by altering the structure of $\Gamma_{b}$
 
-3. The fixed process can be a linear combination of covariates/basis functions
+3. The error process is spatially-correlated. Correlation is introduced through a moving average random field: 
 
-$$\mu(\mathbf{s}, t) = \sum_{p=1}^PX_p(\mathbf{s}, t)\beta_p$$
+$$\epsilon_i(\mathbf{s}, t) =  \frac{1}{N_r}\sum_{\mathbf{s'} \in S_r}Z(\mathbf{s'}, t)$$
 
-- $X(\mathbf{s}, t)$ can be either covariates or basis functions, space/time-fixed or varying.
-
-4. The random process, $b_i(\mathbf{s}, t)$, can also be decomposed into the linear combination of basis functions, just like what we did in the fGFPCA project
-
-\[\begin{aligned}b_i(\mathbf{s}, t) &= \sum_{k=1}^K\phi_k(\mathbf{s}, t)\xi_{ik} \\
-\mathbf{\xi}_i& \sim N(0, \Gamma_{\xi})
-\end{aligned}\]
-
-If we again assume that random spatial and temporal effects are separable, then: 
-
-\[\begin{aligned}b_i(\mathbf{s}, t) &= \sum_{k=1}^K\sum_{l=1}^L\phi_{k}(\mathbf{s})\psi_l(t)\xi_{ikl}\\
-\mathbf{\xi}_{ilk}& \sim N(0, \Gamma_{\xi})
-\end{aligned}\]
-
-- $\phi_{k}(\mathbf{s}), k = 1...K$ are spatial basis functions
-- $\psi_l(t), l = 1...L$ are tempral basis functions
-- $\xi_{ikl}$ are individual scores
-
-
-Following steps above, we introduce spatial and temporal correlation only in $\mu$ and $b_i$. The errors should be iid. 
-
-Here we run into an important issue: for a image of 256 by 256, it seems to be too large to compute all pairwise Euclidean distances and thus get a correlation matrix. 
-
-# Generate from random field
-
-In this case space index $\mathbf{s}$ is treated as discrete. We denote all the measures from the same subject i as $\mathbf{Y}_i = \{Y_i(\mathbf{s}), \mathbf{s}\in S\}$ (here we flatten the multi-dimensional index vector $\mathbf{s}$). Then
-
-$$\mathbf{Y}_i = \mathbf{\eta}_i+A\mathbf{Z}$$
-where:
-
-- $\mathbf{\eta}_i = \{\eta_i(\mathbf{s}), \mathbf{s}\in S\}$ is the mean of subject i. 
-- $\Sigma=AA^T$ is the spatial correlation matrix 
-- $Z \sim N(\mathbf{0}, \mathbf{I})$ is random noise
-
-The simulation becomes very time-consuming for large sample size or dense spatial index. Therefore we may use a **moving average Gaussian process** to introduce spatial correlation. That is:
-
-$$Y_i(\mathbf{s}, t) = \eta_i(\mathbf{s}, t) + \frac{1}{N_r}\sum_{\mathbf{s'} \in S_r}Z(\mathbf{s'}, t)$$
 
 where:
 
 - $S_r$ is a neighborhood around $\mathbf{s}$ where the radius is r
 - $N_r$ is the number of spacial points within neighborhood $S_r$
+- $Z(\mathbf{s'}, t)$ is a white noise process
 
-In this case, the spatial correlation is introduced into the noise process. Do we really need to further introducing spatial correlation or spatial-varying coefficient in the mean process? Could it be only tme-varying? 
 
-We could try to introduce fixed and random effects by decomposing $\eta$: 
+4. The second outcome is generated from the first outcome, and the correlation is time-varying
 
-$$\eta_i(\mathbf{s}, t) = \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t)$$
+$$Y'_i(\mathbf{s},t) = \beta_i(t)Y_i(\mathbf{s},t) + b'_i(\mathbf{s},t) + \epsilon_i(\mathbf{s}, t)$$
 
-and the fixed and random process can incorporate time-effect, or effect of any covariates. 
+# Example
 
-Here, the spatial correlation is introduced in the noise process. Perhaps we don't need to do that in $\eta$. That is, $\eta$ only needs to be time-varying? 
-
-## Example
-
-Let's start with a zero-mean process:
-
-### Spatially correlated noise
-
-```{r gen_img}
+```{r grid}
 # generate a 2D image of 256 by 256
 s1 <- s2 <- 1:256
+t <- seq(0.2, 1, by = 0.2)
+nT <- length(t)
 
+```
+
+
+## Moving average error 
+
+```{r ma_error}
 # generate white noise
 Zmat <- matrix(rnorm(length(s1)*length(s2), 0, 1), length(s1), length(s2))
-```
-
-
-```{r ma_field_func}
-# moving average through 5 by 5 filter
-# input filter size and the original 2D image
-
-MA_rand_field <- function(k, Zmat){
-  
-  s1 <- nrow(Zmat)
-  s2 <- ncol(Zmat)
-
-  
-  psize <- (k-1)/2 # padding size 
-  # add zero padding
-  pad_mat <- cbind(matrix(0, nrow = s1, ncol = psize),
-                   Zmat, 
-                   matrix(0, nrow = nrow(Zmat), ncol = psize)) # pad columns
-  pad_mat <- rbind(matrix(0, nrow = psize, ncol = ncol(pad_mat)),
-                   pad_mat, 
-                   matrix(0, nrow = psize, ncol = ncol(pad_mat)))
-  
-  # moving average
-  ma_mat <- matrix(NA, s1, s2)
-  
-  for(i in 1:s1){
-    for(j in 1:s2){ 
-    
-    ma_mat[i, j] <- mean(pad_mat[i:(i+k-1), j:(j+k-1)])
-    
-    }
-  }
-  
-  return(ma_mat)
-
-}
-
-```
-
-
-```{r ma_field}
 
 ma_k5 <- MA_rand_field(5, Zmat)
 ma_k15 <- MA_rand_field(15, Zmat)
@@ -208,11 +123,12 @@ ggarrange(
   
 ```
 
-In this case the spatial correlation would have to do with the kernel size used to create the moving average field. It looks like the greater kernel size is, the stronger spatial correlation (with neighborhoods) would be. 
+In this case the spatial correlation would have to do with the kernel size used to create the moving average field. It looks like the greater kernel size is, the stronger spatial correlation (with neighborhoods) would be.
 
-Another potential issue about this generation mechanism is that the partial correaltion is not easily specified with a certain equation (like the Matern family distribution). But isn't it a limitation of all spatial generation mechanisms? 
+For this report, I will set K = 15. 
 
-### The mean process
+
+## The mean process
 
 A few things need clarification before a proper mean could be generated. For example:
 
@@ -224,11 +140,11 @@ A few things need clarification before a proper mean could be generated. For exa
 For now, perhaps I should start with the simplest structure: 
 
 
-$$Y_i(\mathbf{s}, t) = \mu(\mathbf{s}, t)+b_i(\mathbf{s}, t) + \frac{1}{N_r}\sum_{\mathbf{s'} \in S_r}Z(\mathbf{s'}, t)$$
+Similar to the dynamic prediction project, I set the population mean as zero: $\mu(\mathbf{s}, t) = 0$, mostly because of **potential unidentifiability**. 
 
-Similar to the dynamic prediction project, I set the population mean as zero: $\mu(\mathbf{s}, t)+b_i(\mathbf{s}, t) = 0$.
+For random effect, I set up one random slope for (non-factorized) time, and one random slope for space. Specifically, the "spatial function" is the standardized distance away from a center $(c_1, c_2)$. 
 
-For random effect, I set up one random slope for (non-factorized) time, and one random slope for space. Specifically, the "spatial function" is the standardized distance away from a center $(c_1, c_2)$. Perhaps this center can also be subject-specific? But now I'm just gonna set $c_1=c_2=128.5$ for all subjects (midpoint of axis). 
+PS Perhaps this center can also be subject-specific? Now I'm just gonna set $c_1=c_2=128.5$ for all subjects (midpoint of axis). 
 
 \[\begin{aligned}
 b_i(\mathbf{s}, t) &= \phi_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0, \sigma^2_{k}) \\
@@ -236,122 +152,166 @@ b_i(\mathbf{s}, t) &= \phi_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0,
 \end{aligned}\]
 
 
+## Correlation between two outcomes
 
-```{r time_grid}
-t <- seq(0.2, 1, by = 0.2)
-nT <- length(t)
+\[\begin{aligned}
+Y'_i(\mathbf{s},t) &= 2tY_i(\mathbf{s},t) + b'_i(\mathbf{s},t)+\sigma^2(\mathbf{s}, t)\\
+b'_i(\mathbf{s}, t) &= \phi_1(\mathbf{s})\xi'_{i1}+t\xi'_{i2}, \ \xi'_{ik} \sim N(0, \sigma^2_{k})
+\end{aligned}\]
+
+
+## One-subject example
+
+```{r gen_score}
+K <- 2
+# randoms core of Y1 and Y2
+xi <- mvtnorm::rmvnorm(1, mean = rep(0, 2*K), sigma = diag(rep(1, 2*K)))
 ```
+
 
 ```{r}
 df_ma$phi1 <- sqrt((df_ma$s1/256-mean(s1)/256)^2+(df_ma$s2/256-mean(s2)/256)^2)
 df <- expand_grid(df_ma, t=t)
+
+# the first outcome
+df <- df %>%
+  mutate(Y1 = phi1*xi[1]+t*xi[2]+k15)
+
+# the second outcome
+df <- df %>% mutate(Y2 = 2*t*Y1+xi[3]*phi1+xi[4]*t)
+df$Y2 <- df$Y2+rnorm(nrow(df), 0, 0.2)
+
 ```
 
+```{r, fig.height=7, fig.width=15}
+ggarrange(
+  
+  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y1))+
+    facet_wrap(~t, nrow = 1)+
+    labs(y = "Y1", x = ""),
+  
+  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y2))+
+    facet_wrap(~t, nrow = 1)+
+    labs(y = "Y2", x = ""),
+  
+  ncol = 1, common.legend = T
+)
+```
 
-```{r gen_score}
-K <- 2
-xi <- mvtnorm::rmvnorm(1, mean = rep(0, K), sigma = diag(rep(1, K)))
+```{r, fig.height=3, fig.width=15}
+df %>% 
+  ggplot(aes(x=Y1, y=Y2))+
+  geom_point(size = 0.5)+
+  geom_smooth(formula = 'y~x', method = "lm")+
+  facet_wrap(~t, nrow = 1)+
+  stat_cor(method = "pearson")
+```
+
+# Multi-subject example
+
+Thus the full expression of data generation scheme:
+
+\[\begin{aligned}
+
+Y_i(\mathbf{s},t) &=\phi_1(\mathbf{s})\xi_{i1}+t\xi_{i2}+\epsilon_i(
+\mathbf{s}, t)\\
+Y'_i(\mathbf{s},t) &= 2tY_i(\mathbf{s},t)+\phi_1(\mathbf{s})\xi'_{i1}+t\xi'_{i2}+\sigma^2(\mathbf{s}, t)
+\end{aligned}\]
+
+- For simplicity, $\xi_{ik}, \xi'_{ik}$ are indenpendently generated from $N(0, 1)$
+- $\sigma^2(\mathbf{s}, t)$ is a white noise generated from $N(0, 0.2^2)$
+- $\epsilon_i$ is a moving average process of a 2D white noise field from $N(0, 1)$, derived by a 15 by 15 filter.
+
+In the real dataset, the correlation would be different for each lesion. However, the current set up seems to imply constant correlation across subjects
+
+```{r}
+N <- 10 # sample size
+# generate scores
+xi_mat <- mvtnorm::rmvnorm(N, mean = rep(0, 2*K), sigma = diag(rep(1, 2*K)))
+
+# container
+df_list <- list()
 ```
 
 
 ```{r}
-
-df <- df %>%
-  mutate(Y_k5 = phi1*xi[1]+t*xi[2]+k5,
-         Y_k15 = phi1*xi[1]+t*xi[2]+k15,
-         Y_k25 = phi1*xi[1]+t*xi[2]+k25)
-
+for(i in 1:N){
+  # moving average noise
+  Zmat <- matrix(rnorm(length(s1)*length(s2), 0, 1), length(s1), length(s2))
+  MAmat <- MA_rand_field(15, Zmat)
+  df_i <- expand.grid(s1=s1, s2=s2) %>% mutate(err =as.vector(MAmat))
+  
+  # first outcome
+  df_i$phi1 <- sqrt((df_i$s1/256-mean(s1)/256)^2+(df_i$s2/256-mean(s2)/256)^2)
+  df_i <- expand_grid(df_i, t=t)
+  df_i <- df_i %>%
+    mutate(Y1 = phi1*xi_mat[i,1]+t*xi_mat[i,2]+err,
+           Y2 = 2*t*Y1+xi_mat[i,3]*phi1+xi_mat[i,4]*t)
+  df_i$Y2 <- df_i$Y2+rnorm(nrow(df_i), 0, 0.2)
+  
+  df_list[[i]] <- df_i
+  
+}
 ```
+
+
+```{r cor_table}
+lapply(df_list, function(x){x %>% group_by(t) %>%
+    summarize(cor = cor(Y1, Y2))}) %>%
+  bind_rows(.,.id = "subject") %>% 
+  pivot_wider(., names_from = t, values_from = cor) %>% 
+  kable(caption = "Correlation", digits = 3) %>%
+  kable_styling(full_width = F)
+```
+
+- Below is an example of subject 9, whose correlation increased cross zero
 
 ```{r, fig.height=10, fig.width=15}
 ggarrange(
-  
-  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y_k5))+
+  df_list[[9]] %>% ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=Y1))+
     facet_wrap(~t, nrow = 1)+
-    labs(col = "Y", y = "K = 5", x = ""),
+    labs(y = "Y1", x = ""),
   
-  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y_k15))+
+  df_list[[9]] %>% ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=Y2))+
     facet_wrap(~t, nrow = 1)+
-    labs(col = "Y", y = "K = 15", x = ""),
+    labs(y = "Y2", x = ""),
   
-  df %>% ggplot()+geom_tile(aes(x=s1, y=s2, fill=Y_k25))+
+  df_list[[9]] %>% 
+    ggplot(aes(x=Y1, y=Y2))+
+    geom_point(size = 0.5)+
+    geom_smooth(formula = 'y~x', method = "lm")+
     facet_wrap(~t, nrow = 1)+
-    labs(col = "Y", y = "K = 25", x = ""),
+    stat_cor(method = "pearson"),
   
   ncol = 1, common.legend = T
 )
 ```
 
 
-<!-- ### Fixed effect:  -->
-
-<!-- $$\mu(\mathbf{s}, t) = X_1(\mathbf{s})\beta_1(t)+\beta_2(t)+X_3\beta_3(t)$$ -->
-
-<!-- - $X_1(\mathbf{s})$ is a Gaussian process with Matern correlation. Here we run into the first issue: for a image of 256 by 256, it seems to be too large to compute all pairwise Euclidean distances and thus get a correlation matrix.  -->
+- And below is an example of subject one, whose correlation stayed positive
 
 
-<!-- ```{r, eval=FALSE} -->
-<!-- # assign an index for each spatial point -->
-<!-- df_coords$pid <- 1:nS -->
-<!-- colnames(df_coords) <- c("s1", "s2", "pid") -->
-
-<!-- # calculate pairwise spatial Euclidiean distance matrix -->
-<!-- df_dist <- dist(df_coords %>% select(s1, s2), diag = T) -->
-<!-- df_dist <- as.matrix(df_dist) -->
-
-<!-- # calculate Matern correlation matrix -->
-<!-- sp_cormat <- matern(df_dist, phi = 0.25, kappa = 0.25) -->
-<!-- sp_covmat <- cor2cov(sp_cormat, sd = rep(1, nS)) -->
-
-<!-- # generate spatial varying covariates from Gaussian process -->
-<!-- X1 <- rmvnorm(1, mean = rep(0, nS), sigma = sp_covmat) -->
-
-<!-- df_sp_i <- data.frame(coords, X1=X1[1, ]) -->
-<!-- # visualization  -->
-
-<!-- plot_ly(data = df_sp_i, x=~s1, y=~s2, z=~X1) %>% add_markers(size = 0.5) -->
-
-<!-- df_sp_i %>% ggplot()+ -->
-<!--   geom_tile(aes(x=s1, y=s2, fill=X1))+ -->
-<!--   labs(title = "Spatial-varying fixed covariate") -->
-<!-- ``` -->
-
-<!-- ### Random process -->
-
-
-<!-- $b_i(\mathbf{s}, t) =X_1(\mathbf{s})\xi_{i1}+t\xi_{i2}, \ \xi_{ik} \sim N(0, \sigma^2_{k})$ -->
-
-
-<!-- ```{r} -->
-<!-- # generate random score -->
-<!-- xi <- rmvnorm(1, mean = rep(0, 2), sigma = diag(1, 2,2)) -->
-<!-- df_i <- df_i %>% mutate(bi = X1*xi[1]+t*xi[2]) -->
-
-
-<!-- # visualize -->
-<!-- df_i %>%  -->
-<!--   ggplot()+ -->
-<!--   geom_tile(aes(x=s1, y=s2, fill=bi))+ -->
-<!--   facet_wrap(~t)+ -->
-<!--   labs(title = "Random process") -->
-<!-- ``` -->
-
-
-<!-- # Final outcome -->
-
-<!-- ```{r} -->
-<!-- df_i$error <- rnorm(nrow(df_i), 1, 0.5) -->
-<!-- df_i <- df_i %>% mutate(Y = mu+bi+error) -->
-
-<!-- # visualize -->
-<!-- df_i %>%  -->
-<!--   ggplot()+ -->
-<!--   geom_tile(aes(x=s1, y=s2, fill=Y))+ -->
-<!--   facet_wrap(~t)+ -->
-<!--   labs(title = "Outcome") -->
-<!-- ``` -->
-
-
-
-
-
+```{r, fig.height=10, fig.width=15}
+ggarrange(
+  df_list[[1]] %>% ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=Y1))+
+    facet_wrap(~t, nrow = 1)+
+    labs(y = "Y1", x = ""),
+  
+  df_list[[1]] %>% ggplot()+
+    geom_tile(aes(x=s1, y=s2, fill=Y2))+
+    facet_wrap(~t, nrow = 1)+
+    labs(y = "Y2", x = ""),
+  
+  df_list[[1]] %>% 
+    ggplot(aes(x=Y1, y=Y2))+
+    geom_point(size = 0.5)+
+    geom_smooth(formula = 'y~x', method = "lm")+
+    facet_wrap(~t, nrow = 1)+
+    stat_cor(method = "pearson"),
+  
+  ncol = 1, common.legend = T
+)
+```
